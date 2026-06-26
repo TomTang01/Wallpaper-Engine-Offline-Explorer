@@ -32,6 +32,14 @@ F:\Download\[WE data]
 
 You can change the root folder from the input at the top of the page.
 
+## How to find the Wallpaper Engine folder
+
+1. Go to your Steam root folder (the folder where your steam.exe is).
+2. Within that folder, find and click on `steamapps`
+3. Click on `workshop`
+4. Click on `content`
+5. You should see a folder that is named something like `431960`. This is the Wallpaper Engine folder.
+
 ## Browser limitation
 
 A normal webpage cannot reliably scan arbitrary local folders or open File Explorer because browsers restrict filesystem access for security. This app uses a local Node.js server on `127.0.0.1` to scan folders, serve image previews, and open the selected subfolder in the system file explorer.
