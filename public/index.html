@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wallpaper Engine Offline Explorer</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>Wallpaper Engine Offline Explorer</h1>
+        <p>Browse direct subfolders of a Wallpaper Engine structured directory.</p>
+      </div>
+      <form id="scanForm" class="scan-form">
+        <label for="rootPath">Root folder</label>
+        <div class="path-row">
+          <input id="rootPath" name="rootPath" type="text" autocomplete="off" />
+          <button type="submit">Scan</button>
+          <button id="closeAppButton" class="danger-button" type="button">Close App</button>
+        </div>
+      </form>
+    </header>
+
+    <main>
+      <section class="toolbar" aria-live="polite">
+        <div id="statusText">Loading app...</div>
+        <div class="toolbar-controls">
+          <div class="filter-wrap">
+            <button id="filterButton" class="secondary-button" type="button" aria-expanded="false">
+              Filter
+            </button>
+            <div id="filterPanel" class="filter-panel" hidden>
+              <div class="filter-title">Project type</div>
+              <div id="filterOptions" class="filter-options"></div>
+            </div>
+          </div>
+          <label class="page-size">
+            Per page
+            <select id="pageSize">
+              <option value="8">8</option>
+              <option value="12" selected>12</option>
+              <option value="16">16</option>
+              <option value="24">24</option>
+              <option value="50">50</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <section id="grid" class="grid" aria-label="Folder previews"></section>
+
+      <nav id="pagination" class="pagination" aria-label="Page navigation"></nav>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
