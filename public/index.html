@@ -31,10 +31,26 @@
               Filter
             </button>
             <div id="filterPanel" class="filter-panel" hidden>
-              <div class="filter-title">Project type</div>
-              <div id="filterOptions" class="filter-options"></div>
+              <div class="filter-section">
+                <div class="filter-title">Type</div>
+                <div id="filterOptions" class="filter-options"></div>
+              </div>
+              <div class="filter-section">
+                <div class="filter-title">Tags</div>
+                <div id="filterTagOptions" class="filter-options"></div>
+              </div>
             </div>
           </div>
+          <div class="sort-wrap">
+            <button id="sortButton" class="secondary-button" type="button" aria-expanded="false">
+              Default (time)
+            </button>
+            <div id="sortPanel" class="sort-panel" hidden>
+              <button class="sort-option" type="button" data-sort-mode="default">Default (time)</button>
+              <button class="sort-option" type="button" data-sort-mode="size">Size</button>
+            </div>
+          </div>
+          <button id="showAddDialogButton" type="button">Add</button>
           <label class="page-size">
             Per page
             <select id="pageSize">
@@ -52,6 +68,94 @@
 
       <nav id="pagination" class="pagination" aria-label="Page navigation"></nav>
     </main>
+
+    <div id="addDialogOverlay" class="dialog-overlay" hidden>
+      <section class="add-dialog" role="dialog" aria-modal="true" aria-labelledby="addDialogTitle">
+        <h2 id="addDialogTitle">Add new item</h2>
+        <form id="addItemForm" class="add-form">
+          <label id="fileDropZone" class="file-drop-zone" for="addFileInput">
+            <input id="addFileInput" type="file" />
+            <span class="drop-title">Drag and drop a file here</span>
+            <span id="selectedFileName" class="drop-detail">or click to choose one</span>
+          </label>
+
+          <label class="field-label" for="addTitleInput">
+            Title
+            <input id="addTitleInput" type="text" autocomplete="off" />
+          </label>
+
+          <label class="field-label" for="addTypeSelect">
+            Type
+            <select id="addTypeSelect">
+              <option value="">Choose type</option>
+              <option value="application">application</option>
+              <option value="video">video</option>
+              <option value="scene">scene</option>
+              <option value="other">other</option>
+            </select>
+          </label>
+
+          <div class="dialog-actions">
+            <button id="cancelAddButton" class="danger-button" type="button">Back</button>
+            <button id="confirmAddButton" type="submit" disabled>Add</button>
+          </div>
+        </form>
+      </section>
+    </div>
+
+    <div id="editDialogOverlay" class="dialog-overlay" hidden>
+      <section class="edit-dialog" role="dialog" aria-modal="true" aria-labelledby="editDialogTitle">
+        <h2 id="editDialogTitle">Edit item</h2>
+        <div class="edit-form">
+          <button id="editOpenFolderButton" class="secondary-button" type="button">Open Folder</button>
+
+          <label class="field-label" for="editTypeSelect">
+            Type
+            <select id="editTypeSelect">
+              <option value="application">application</option>
+              <option value="video">video</option>
+              <option value="scene">scene</option>
+              <option value="other">other</option>
+            </select>
+          </label>
+
+          <div class="field-label">
+            Tags
+            <div class="tag-picker">
+              <button id="tagDropdownButton" class="secondary-button" type="button" aria-expanded="false">
+                Choose tags
+              </button>
+              <div id="tagDropdownPanel" class="tag-dropdown-panel" hidden>
+                <div class="tag-dropdown-tools">
+                  <input id="tagSearchInput" type="search" placeholder="Search tags" autocomplete="off" />
+                  <button id="showNewTagButton" type="button">New</button>
+                </div>
+                <div id="tagOptions" class="tag-options"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="dialog-actions">
+            <button id="cancelEditButton" class="danger-button" type="button">Back</button>
+            <button id="confirmEditButton" type="button">Confirm</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div id="newTagDialogOverlay" class="dialog-overlay" hidden>
+      <section class="new-tag-dialog" role="dialog" aria-modal="true" aria-labelledby="newTagDialogTitle">
+        <h2 id="newTagDialogTitle">New tag</h2>
+        <label class="field-label" for="newTagInput">
+          Name
+          <input id="newTagInput" type="text" autocomplete="off" />
+        </label>
+        <div class="dialog-actions">
+          <button id="cancelNewTagButton" class="danger-button" type="button">Back</button>
+          <button id="confirmNewTagButton" type="button">Confirm</button>
+        </div>
+      </section>
+    </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
 

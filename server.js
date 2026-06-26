@@ -3,6 +3,7 @@ const fs = require("fs");
 const fsp = require("fs/promises");
 const path = require("path");
 const { spawn } = require("child_process");
+const { pipeline } = require("stream/promises");
 
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.PORT || 43196);
@@ -19,6 +20,9 @@ const SUPPORTED_EXTENSIONS = new Set([
 ]);
 const PROJECT_TYPES = ["application", "video", "scene", "other"];
 const PROJECT_TYPE_SET = new Set(PROJECT_TYPES);
+const SORT_MODES = new Set(["default", "size"]);
+const MAX_JSON_BODY_SIZE = 1024 * 1024;
+const MAX_UPLOAD_BODY_SIZE = 100 * 1024 * 1024;
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -82,6 +86,189 @@ function sortByName(a, b) {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 }
 
+async function getFolderSize(folderPath) {
+  let total = 0;
+  let entries;
+
+  try {
+    entries = await fsp.readdir(folderPath, { withFileTypes: true });
+  } catch (error) {
+    return 0;
+  }
+
+  await Promise.all(
+    entries.map(async (entry) => {
+      const entryPath = path.join(folderPath, entry.name);
+      try {
+        if (entry.isFile()) {
+          const stats = await fsp.stat(entryPath);
+          total += stats.size;
+        } else if (entry.isDirectory()) {
+          total += await getFolderSize(entryPath);
+        }
+      } catch (error) {
+        total += 0;
+      }
+    })
+  );
+
+  return total;
+}
+
+function splitBuffer(buffer, delimiter) {
+  const chunks = [];
+  let start = 0;
+  let index = buffer.indexOf(delimiter, start);
+
+  while (index !== -1) {
+    chunks.push(buffer.slice(start, index));
+    start = index + delimiter.length;
+    index = buffer.indexOf(delimiter, start);
+  }
+
+  chunks.push(buffer.slice(start));
+  return chunks;
+}
+
+function parseHeaderBlock(text) {
+  return text.split("\r\n").reduce((headers, line) => {
+    const separator = line.indexOf(":");
+    if (separator === -1) return headers;
+    headers[line.slice(0, separator).trim().toLowerCase()] = line
+      .slice(separator + 1)
+      .trim();
+    return headers;
+  }, {});
+}
+
+function parseDisposition(value) {
+  const result = {};
+  for (const part of value.split(";")) {
+    const [rawKey, ...rawValue] = part.trim().split("=");
+    if (!rawValue.length) continue;
+    result[rawKey.toLowerCase()] = rawValue
+      .join("=")
+      .trim()
+      .replace(/^"|"$/g, "");
+  }
+  return result;
+}
+
+function parseMultipartForm(buffer, boundary) {
+  const delimiter = Buffer.from(`--${boundary}`);
+  const headerDelimiter = Buffer.from("\r\n\r\n");
+  const fields = {};
+  const files = {};
+
+  for (const rawPart of splitBuffer(buffer, delimiter).slice(1)) {
+    if (rawPart.slice(0, 2).toString("latin1") === "--") break;
+
+    let part = rawPart;
+    if (part.slice(0, 2).toString("latin1") === "\r\n") {
+      part = part.slice(2);
+    }
+    if (part.slice(-2).toString("latin1") === "\r\n") {
+      part = part.slice(0, -2);
+    }
+
+    const headerEnd = part.indexOf(headerDelimiter);
+    if (headerEnd === -1) continue;
+
+    const headers = parseHeaderBlock(part.slice(0, headerEnd).toString("utf8"));
+    const disposition = parseDisposition(headers["content-disposition"] || "");
+    const name = disposition.name;
+    if (!name) continue;
+
+    const body = part.slice(headerEnd + headerDelimiter.length);
+    if (disposition.filename !== undefined) {
+      files[name] = {
+        filename: path.basename(disposition.filename),
+        contentType: headers["content-type"] || "application/octet-stream",
+        buffer: body,
+      };
+    } else {
+      fields[name] = body.toString("utf8");
+    }
+  }
+
+  return { fields, files };
+}
+
+function sanitizeFileName(fileName) {
+  const cleaned = path
+    .basename(fileName)
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[. ]+$/g, "");
+
+  if (!cleaned || cleaned.toLowerCase() === "project.json") {
+    return "uploaded-file";
+  }
+
+  return cleaned.slice(0, 180);
+}
+
+function normalizeTags(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((tag) => String(tag).trim())
+      .filter(Boolean);
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    return [value.trim()];
+  }
+
+  return [];
+}
+
+function uniqueTags(tags) {
+  const seen = new Set();
+  const result = [];
+
+  for (const tag of tags) {
+    const normalized = String(tag).trim();
+    const key = normalized.toLowerCase();
+    if (!normalized || seen.has(key)) continue;
+    seen.add(key);
+    result.push(normalized);
+  }
+
+  return result.sort(sortByName);
+}
+
+async function createNextNumberedFolder(rootPath) {
+  const entries = await fsp.readdir(rootPath, { withFileTypes: true });
+  const largestNumber = entries.reduce((largest, entry) => {
+    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) return largest;
+    const value = Number.parseInt(entry.name, 10);
+    return Number.isSafeInteger(value) ? Math.max(largest, value) : largest;
+  }, 0);
+
+  for (let offset = 1; offset <= 1000; offset += 1) {
+    const folderName = String(largestNumber + offset);
+    const folderPath = path.join(rootPath, folderName);
+    if (!isDirectChildFolder(rootPath, folderPath)) {
+      const error = new Error("The generated folder path is not allowed.");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    try {
+      await fsp.mkdir(folderPath);
+      return folderPath;
+    } catch (error) {
+      if (error.code === "EEXIST") continue;
+      throw error;
+    }
+  }
+
+  const error = new Error("Could not create the next numbered folder.");
+  error.statusCode = 409;
+  throw error;
+}
+
 async function readProjectMetadata(folderPath) {
   try {
     const projectPath = path.join(folderPath, "project.json");
@@ -101,9 +288,16 @@ async function readProjectMetadata(folderPath) {
         ? project.title.trim()
         : null;
 
-    return { type, title };
+    return {
+      type,
+      title,
+      tags: uniqueTags([
+        ...normalizeTags(project.tag),
+        ...normalizeTags(project.tags),
+      ]),
+    };
   } catch (error) {
-    return { type: "other", title: null };
+    return { type: "other", title: null, tags: [] };
   }
 }
 
@@ -127,7 +321,16 @@ async function findPreviewFile(folderPath) {
   return path.join(folderPath, candidates[0]);
 }
 
-async function scanRoot(rootPath, page, pageSize, selectedTypes, hasExplicitTypeFilter) {
+async function scanRoot(
+  rootPath,
+  page,
+  pageSize,
+  selectedTypes,
+  hasExplicitTypeFilter,
+  selectedTags,
+  hasExplicitTagFilter,
+  sortMode
+) {
   const resolvedRoot = path.resolve(rootPath);
   const rootStats = await fsp.stat(resolvedRoot);
   if (!rootStats.isDirectory()) {
@@ -152,22 +355,52 @@ async function scanRoot(rootPath, page, pageSize, selectedTypes, hasExplicitType
         ...folder,
         type: metadata.type,
         displayName: metadata.title || folder.name,
+        tags: metadata.tags,
       };
     })
   );
   const availableTypes = PROJECT_TYPES;
+  const availableTags = uniqueTags(
+    foldersWithTypes.flatMap((folder) => folder.tags || [])
+  );
   const activeTypeSet = hasExplicitTypeFilter
     ? new Set(selectedTypes.filter((type) => PROJECT_TYPE_SET.has(type)))
     : new Set(PROJECT_TYPES);
-  const filteredFolders = foldersWithTypes.filter((folder) =>
-    activeTypeSet.has(folder.type)
+  const availableTagKeys = new Map(
+    availableTags.map((tag) => [tag.toLowerCase(), tag])
   );
+  const activeTagSet = hasExplicitTagFilter
+    ? new Set(
+        selectedTags
+          .map((tag) => availableTagKeys.get(tag.toLowerCase()))
+          .filter(Boolean)
+      )
+    : new Set();
+  const activeTagKeys = new Set(
+    Array.from(activeTagSet).map((tag) => tag.toLowerCase())
+  );
+  const filteredFolders = foldersWithTypes.filter((folder) => {
+    if (!activeTypeSet.has(folder.type)) return false;
+    if (!activeTagKeys.size) return true;
+    return (folder.tags || []).some((tag) => activeTagKeys.has(tag.toLowerCase()));
+  });
+  const sortedFolders =
+    sortMode === "size"
+      ? (
+          await Promise.all(
+            filteredFolders.map(async (folder) => ({
+              ...folder,
+              size: await getFolderSize(folder.folderPath),
+            }))
+          )
+        ).sort((a, b) => b.size - a.size || sortByName(b.name, a.name))
+      : filteredFolders;
 
-  const totalFolders = filteredFolders.length;
+  const totalFolders = sortedFolders.length;
   const totalPages = Math.max(1, Math.ceil(totalFolders / pageSize));
   const safePage = Math.min(page, totalPages);
   const start = (safePage - 1) * pageSize;
-  const pageFolders = filteredFolders.slice(start, start + pageSize);
+  const pageFolders = sortedFolders.slice(start, start + pageSize);
 
   const items = await Promise.all(
     pageFolders.map(async (folder) => {
@@ -204,21 +437,24 @@ async function scanRoot(rootPath, page, pageSize, selectedTypes, hasExplicitType
     rootPath: resolvedRoot,
     page: safePage,
     pageSize,
+    sortMode,
     totalFolders,
     totalUnfilteredFolders: foldersWithTypes.length,
     totalPages,
     availableTypes,
+    availableTags,
     selectedTypes: Array.from(activeTypeSet),
+    selectedTags: Array.from(activeTagSet),
     items,
   };
 }
 
-async function readRequestBody(req) {
+async function readRawRequestBody(req, maxSize) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 1024 * 1024) {
+    if (size > maxSize) {
       const error = new Error("Request body is too large.");
       error.statusCode = 413;
       throw error;
@@ -226,8 +462,13 @@ async function readRequestBody(req) {
     chunks.push(chunk);
   }
 
-  if (chunks.length === 0) return {};
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  return Buffer.concat(chunks);
+}
+
+async function readRequestBody(req) {
+  const body = await readRawRequestBody(req, MAX_JSON_BODY_SIZE);
+  if (body.length === 0) return {};
+  return JSON.parse(body.toString("utf8"));
 }
 
 async function servePreview(reqUrl, res) {
@@ -356,6 +597,132 @@ async function deleteFolder(req, res) {
   }
 }
 
+async function updateProject(req, res) {
+  let body;
+  try {
+    body = await readRequestBody(req);
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: "Invalid JSON request." });
+    return;
+  }
+
+  const rootPath = body.rootPath;
+  const folderPath = body.folderPath;
+  const type = String(body.type || "").trim().toLowerCase();
+  const tags = uniqueTags(normalizeTags(body.tags));
+
+  if (!rootPath || !folderPath || !type) {
+    sendJson(res, 400, { error: "Missing rootPath, folderPath, or type." });
+    return;
+  }
+
+  if (!PROJECT_TYPE_SET.has(type)) {
+    sendJson(res, 400, { error: "Choose a valid project type." });
+    return;
+  }
+
+  const resolvedRoot = path.resolve(rootPath);
+  const resolvedFolder = path.resolve(folderPath);
+  if (!isDirectChildFolder(resolvedRoot, resolvedFolder)) {
+    sendJson(res, 403, { error: "Only direct subfolders of the root can be edited." });
+    return;
+  }
+
+  try {
+    const stats = await fsp.stat(resolvedFolder);
+    if (!stats.isDirectory()) {
+      sendJson(res, 404, { error: "Folder was not found." });
+      return;
+    }
+
+    const projectPath = path.join(resolvedFolder, "project.json");
+    let project = {};
+    try {
+      const text = await fsp.readFile(projectPath, "utf8");
+      project = JSON.parse(text.replace(/^\uFEFF/, ""));
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+
+    project.type = type;
+    if (Object.prototype.hasOwnProperty.call(project, "tags") && !Object.prototype.hasOwnProperty.call(project, "tag")) {
+      project.tags = tags;
+    } else {
+      project.tag = tags;
+    }
+
+    await fsp.writeFile(projectPath, `${JSON.stringify(project, null, 2)}\n`, "utf8");
+    sendJson(res, 200, { ok: true, type, tags });
+  } catch (error) {
+    sendJson(res, 500, { error: "Could not update project.json." });
+  }
+}
+
+async function addItem(req, res, reqUrl) {
+  const rootPath = String(reqUrl.searchParams.get("rootPath") || "").trim();
+  const title = String(reqUrl.searchParams.get("title") || "").trim();
+  const type = String(reqUrl.searchParams.get("type") || "").trim().toLowerCase();
+  const fileName = sanitizeFileName(reqUrl.searchParams.get("fileName") || "");
+
+  if (!rootPath || !title || !type || !fileName) {
+    sendJson(res, 400, { error: "A file, title, and type are required." });
+    return;
+  }
+
+  if (!PROJECT_TYPE_SET.has(type)) {
+    sendJson(res, 400, { error: "Choose a valid project type." });
+    return;
+  }
+
+  const contentLength = Number.parseInt(req.headers["content-length"] || "0", 10);
+  if (Number.isFinite(contentLength) && contentLength <= 0) {
+    sendJson(res, 400, { error: "Choose a non-empty file." });
+    return;
+  }
+
+  const resolvedRoot = path.resolve(rootPath);
+  let createdFolder = null;
+
+  try {
+    const rootStats = await fsp.stat(resolvedRoot);
+    if (!rootStats.isDirectory()) {
+      sendJson(res, 400, { error: "The root path is not a folder." });
+      return;
+    }
+
+    createdFolder = await createNextNumberedFolder(resolvedRoot);
+    const uploadPath = path.join(createdFolder, fileName);
+    await pipeline(req, fs.createWriteStream(uploadPath, { flags: "wx" }));
+
+    const uploadStats = await fsp.stat(uploadPath);
+    if (!uploadStats.isFile() || uploadStats.size === 0) {
+      const error = new Error("Choose a non-empty file.");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    await fsp.writeFile(
+      path.join(createdFolder, "project.json"),
+      `${JSON.stringify({ title, type }, null, 2)}\n`,
+      { flag: "wx" }
+    );
+
+    sendJson(res, 200, {
+      ok: true,
+      rootPath: resolvedRoot,
+      folderPath: createdFolder,
+      fileName,
+    });
+  } catch (error) {
+    if (createdFolder) {
+      await fsp.rm(createdFolder, { recursive: true, force: true }).catch(() => {});
+    }
+    sendJson(res, error.statusCode || 500, {
+      error: error.message || "Could not add the item.",
+    });
+  }
+}
+
 function shutdownServer(res) {
   sendJson(res, 200, { ok: true });
   setTimeout(() => {
@@ -379,6 +746,7 @@ function serveStatic(reqUrl, res) {
     .on("open", () => {
       res.writeHead(200, {
         "Content-Type": contentTypes[extension] || "application/octet-stream",
+        "Cache-Control": "no-store",
       });
     })
     .on("error", () => {
@@ -403,17 +771,29 @@ async function handleRequest(req, res) {
       const rootPath = reqUrl.searchParams.get("rootPath") || DEFAULT_ROOT;
       const page = clampInteger(reqUrl.searchParams.get("page"), 1, 1, 100000);
       const pageSize = clampInteger(reqUrl.searchParams.get("pageSize"), 12, 1, 60);
+      const requestedSortMode = reqUrl.searchParams.get("sortMode") || "default";
+      const sortMode = SORT_MODES.has(requestedSortMode)
+        ? requestedSortMode
+        : "default";
       const selectedTypes = reqUrl.searchParams
         .getAll("type")
         .map((type) => type.trim().toLowerCase())
         .filter(Boolean);
+      const selectedTags = reqUrl.searchParams
+        .getAll("tag")
+        .map((tag) => tag.trim())
+        .filter(Boolean);
       const hasExplicitTypeFilter = reqUrl.searchParams.has("typeFilter");
+      const hasExplicitTagFilter = reqUrl.searchParams.has("tagFilter");
       const result = await scanRoot(
         rootPath,
         page,
         pageSize,
         selectedTypes,
-        hasExplicitTypeFilter
+        hasExplicitTypeFilter,
+        selectedTags,
+        hasExplicitTagFilter,
+        sortMode
       );
       sendJson(res, 200, result);
       return;
@@ -431,6 +811,16 @@ async function handleRequest(req, res) {
 
     if (req.method === "POST" && reqUrl.pathname === "/api/delete-folder") {
       await deleteFolder(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && reqUrl.pathname === "/api/update-project") {
+      await updateProject(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && reqUrl.pathname === "/api/add-item") {
+      await addItem(req, res, reqUrl);
       return;
     }
 
