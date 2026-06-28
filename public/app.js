@@ -13,8 +13,9 @@ const SORT_LABELS = {
 const state = {
   rootPath: "",
   page: 1,
-  pageSize: 12,
+  pageSize: 20,
   sortMode: "default",
+  searchQuery: "",
   totalPages: 1,
   totalFolders: 0,
   totalUnfilteredFolders: 0,
@@ -25,9 +26,14 @@ const state = {
   loading: false,
   adding: false,
   addFile: null,
+  addTags: new Set(),
+  addAvailableTags: [],
+  addTagDisplayOrder: [],
   editItem: null,
   editTags: new Set(),
   editAvailableTags: [],
+  editTagDisplayOrder: [],
+  activeTagContext: "edit",
   shutdownRequested: false,
   scanRequestId: 0,
 };
@@ -44,9 +50,15 @@ const elements = {
   selectedFileName: document.querySelector("#selectedFileName"),
   addTitleInput: document.querySelector("#addTitleInput"),
   addTypeSelect: document.querySelector("#addTypeSelect"),
+  addTagDropdownButton: document.querySelector("#addTagDropdownButton"),
+  addTagDropdownPanel: document.querySelector("#addTagDropdownPanel"),
+  addTagSearchInput: document.querySelector("#addTagSearchInput"),
+  addShowNewTagButton: document.querySelector("#addShowNewTagButton"),
+  addTagOptions: document.querySelector("#addTagOptions"),
   cancelAddButton: document.querySelector("#cancelAddButton"),
   confirmAddButton: document.querySelector("#confirmAddButton"),
   editDialogOverlay: document.querySelector("#editDialogOverlay"),
+  editDialogTitle: document.querySelector("#editDialogTitle"),
   editOpenFolderButton: document.querySelector("#editOpenFolderButton"),
   editTypeSelect: document.querySelector("#editTypeSelect"),
   tagDropdownButton: document.querySelector("#tagDropdownButton"),
@@ -56,10 +68,12 @@ const elements = {
   tagOptions: document.querySelector("#tagOptions"),
   cancelEditButton: document.querySelector("#cancelEditButton"),
   confirmEditButton: document.querySelector("#confirmEditButton"),
+  editDeleteButton: document.querySelector("#editDeleteButton"),
   newTagDialogOverlay: document.querySelector("#newTagDialogOverlay"),
   newTagInput: document.querySelector("#newTagInput"),
   cancelNewTagButton: document.querySelector("#cancelNewTagButton"),
   confirmNewTagButton: document.querySelector("#confirmNewTagButton"),
+  titleSearchInput: document.querySelector("#titleSearchInput"),
   pageSize: document.querySelector("#pageSize"),
   filterButton: document.querySelector("#filterButton"),
   filterPanel: document.querySelector("#filterPanel"),
@@ -76,6 +90,7 @@ const elements = {
 
 let toastTimer;
 let titleFitTimer;
+let searchTimer;
 
 function loadSavedPageSize() {
   const saved = Number.parseInt(localStorage.getItem(STORAGE_KEYS.pageSize), 10);
@@ -173,10 +188,16 @@ function updateAddButtonState() {
 function resetAddDialog() {
   state.adding = false;
   state.addFile = null;
+  state.addTags = new Set();
+  state.addAvailableTags = normalizeTagList(state.availableTags);
+  state.addTagDisplayOrder = [];
   elements.addItemForm.reset();
+  elements.addTagSearchInput.value = "";
   elements.selectedFileName.textContent = "or click to choose one";
   elements.fileDropZone.classList.remove("drag-over");
   elements.confirmAddButton.textContent = "Add";
+  setTagDropdownOpen("add", false);
+  updateTagDropdownButton("add");
   updateAddButtonState();
 }
 
@@ -221,21 +242,77 @@ function normalizeTagList(tags) {
   return result.sort(tagSort);
 }
 
-function findExistingTag(tag) {
-  const key = tag.trim().toLowerCase();
-  return state.editAvailableTags.find((existing) => existing.toLowerCase() === key);
+function checkedTagsFirst(tags, selectedTags) {
+  return [
+    ...tags.filter((tag) => selectedTags.has(tag)),
+    ...tags.filter((tag) => !selectedTags.has(tag)),
+  ];
 }
 
-function updateTagDropdownButton() {
-  const count = state.editTags.size;
-  elements.tagDropdownButton.textContent =
+function getTagPicker(context) {
+  if (context === "add") {
+    return {
+      tagsKey: "addTags",
+      availableKey: "addAvailableTags",
+      displayOrderKey: "addTagDisplayOrder",
+      button: elements.addTagDropdownButton,
+      panel: elements.addTagDropdownPanel,
+      searchInput: elements.addTagSearchInput,
+      options: elements.addTagOptions,
+    };
+  }
+
+  return {
+    tagsKey: "editTags",
+    availableKey: "editAvailableTags",
+    displayOrderKey: "editTagDisplayOrder",
+    button: elements.tagDropdownButton,
+    panel: elements.tagDropdownPanel,
+    searchInput: elements.tagSearchInput,
+    options: elements.tagOptions,
+  };
+}
+
+function findExistingTag(tag, context) {
+  const picker = getTagPicker(context);
+  const key = tag.trim().toLowerCase();
+  return state[picker.availableKey].find((existing) => existing.toLowerCase() === key);
+}
+
+function refreshTagDisplayOrder(context) {
+  const picker = getTagPicker(context);
+  state[picker.displayOrderKey] = checkedTagsFirst(
+    state[picker.availableKey],
+    state[picker.tagsKey]
+  );
+}
+
+function getTagDisplayOrder(context) {
+  const picker = getTagPicker(context);
+  const available = new Set(state[picker.availableKey]);
+  const ordered = state[picker.displayOrderKey].filter((tag) => available.has(tag));
+  const orderedSet = new Set(ordered);
+  const missing = state[picker.availableKey].filter((tag) => !orderedSet.has(tag));
+
+  if (missing.length || ordered.length !== state[picker.displayOrderKey].length) {
+    state[picker.displayOrderKey] = [...ordered, ...missing];
+  }
+
+  return state[picker.displayOrderKey];
+}
+
+function updateTagDropdownButton(context) {
+  const picker = getTagPicker(context);
+  const count = state[picker.tagsKey].size;
+  picker.button.textContent =
     count === 0 ? "Choose tags" : `${count} tag${count === 1 ? "" : "s"} selected`;
 }
 
-function renderTagOptions() {
-  elements.tagOptions.textContent = "";
-  const query = elements.tagSearchInput.value.trim().toLowerCase();
-  const tags = state.editAvailableTags.filter((tag) =>
+function renderTagOptions(context = state.activeTagContext) {
+  const picker = getTagPicker(context);
+  picker.options.textContent = "";
+  const query = picker.searchInput.value.trim().toLowerCase();
+  const tags = getTagDisplayOrder(context).filter((tag) =>
     tag.toLowerCase().includes(query)
   );
 
@@ -243,8 +320,8 @@ function renderTagOptions() {
     const empty = document.createElement("div");
     empty.className = "tag-empty";
     empty.textContent = query ? "No matching tags." : "No tags yet.";
-    elements.tagOptions.append(empty);
-    updateTagDropdownButton();
+    picker.options.append(empty);
+    updateTagDropdownButton(context);
     return;
   }
 
@@ -256,14 +333,14 @@ function renderTagOptions() {
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.value = tag;
-    checkbox.checked = state.editTags.has(tag);
+    checkbox.checked = state[picker.tagsKey].has(tag);
     checkbox.addEventListener("change", () => {
       if (checkbox.checked) {
-        state.editTags.add(tag);
+        state[picker.tagsKey].add(tag);
       } else {
-        state.editTags.delete(tag);
+        state[picker.tagsKey].delete(tag);
       }
-      updateTagDropdownButton();
+      updateTagDropdownButton(context);
     });
 
     const text = document.createElement("span");
@@ -272,17 +349,38 @@ function renderTagOptions() {
     fragment.append(option);
   });
 
-  elements.tagOptions.append(fragment);
-  updateTagDropdownButton();
+  picker.options.append(fragment);
+  updateTagDropdownButton(context);
 }
 
-function setTagDropdownOpen(isOpen) {
-  elements.tagDropdownPanel.hidden = !isOpen;
-  elements.tagDropdownButton.setAttribute("aria-expanded", String(isOpen));
+function setTagDropdownOpen(context, isOpen) {
+  const picker = getTagPicker(context);
+  picker.panel.hidden = !isOpen;
+  picker.button.setAttribute("aria-expanded", String(isOpen));
   if (isOpen) {
-    elements.tagSearchInput.focus();
-    renderTagOptions();
+    state.activeTagContext = context;
+    refreshTagDisplayOrder(context);
+    picker.searchInput.focus();
+    renderTagOptions(context);
+  } else {
+    refreshTagDisplayOrder(context);
   }
+}
+
+function trapTagDropdownWheel(context, event) {
+  const picker = getTagPicker(context);
+  if (picker.panel.hidden || !picker.panel.contains(event.target)) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  if (picker.options.scrollHeight <= picker.options.clientHeight) {
+    return;
+  }
+
+  picker.options.scrollTop += event.deltaY;
 }
 
 function setEditDialogOpen(isOpen) {
@@ -291,22 +389,26 @@ function setEditDialogOpen(isOpen) {
     state.editItem = null;
     state.editTags = new Set();
     state.editAvailableTags = [];
+    state.editTagDisplayOrder = [];
     elements.tagSearchInput.value = "";
-    setTagDropdownOpen(false);
+    elements.editDialogTitle.textContent = "Edit item";
+    setTagDropdownOpen("edit", false);
   }
 }
 
 function openEditDialog(item) {
   state.editItem = item;
+  elements.editDialogTitle.textContent = item.displayName || item.name;
   state.editTags = new Set(normalizeTagList(item.tags || []));
   state.editAvailableTags = normalizeTagList([
     ...state.availableTags,
     ...state.editTags,
   ]);
+  refreshTagDisplayOrder("edit");
   elements.editTypeSelect.value = DEFAULT_TYPES.includes(item.type) ? item.type : "other";
   elements.tagSearchInput.value = "";
   setEditDialogOpen(true);
-  renderTagOptions();
+  renderTagOptions("edit");
   elements.editOpenFolderButton.focus();
 }
 
@@ -325,16 +427,19 @@ function confirmNewTag() {
     return;
   }
 
-  const existing = findExistingTag(newTag);
+  const context = state.activeTagContext;
+  const picker = getTagPicker(context);
+  const existing = findExistingTag(newTag, context);
   const tag = existing || newTag;
   if (!existing) {
-    state.editAvailableTags = normalizeTagList([...state.editAvailableTags, tag]);
+    state[picker.availableKey] = normalizeTagList([...state[picker.availableKey], tag]);
   }
-  state.editTags.add(tag);
-  elements.tagSearchInput.value = "";
+  state[picker.tagsKey].add(tag);
+  refreshTagDisplayOrder(context);
+  picker.searchInput.value = "";
   setNewTagDialogOpen(false);
-  setTagDropdownOpen(true);
-  renderTagOptions();
+  setTagDropdownOpen(context, true);
+  renderTagOptions(context);
 }
 
 async function confirmProjectEdit() {
@@ -379,6 +484,8 @@ async function submitAddItem(event) {
     type: elements.addTypeSelect.value,
     fileName: state.addFile.name,
   });
+  const tags = state.addTags.size ? Array.from(state.addTags) : ["Untagged"];
+  tags.forEach((tag) => params.append("tag", tag));
 
   state.adding = true;
   elements.confirmAddButton.textContent = "Adding...";
@@ -435,6 +542,17 @@ function folderCard(item) {
 
   const preview = document.createElement("div");
   preview.className = item.hasPreview ? "preview-window" : "preview-window error";
+  preview.role = "button";
+  preview.tabIndex = 0;
+  preview.title = "Edit item";
+  preview.ariaLabel = `Edit ${item.displayName || item.name}`;
+  preview.addEventListener("click", () => openEditDialog(item));
+  preview.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openEditDialog(item);
+    }
+  });
 
   if (item.hasPreview) {
     const image = document.createElement("img");
@@ -457,26 +575,7 @@ function folderCard(item) {
     preview.append(errorBlock);
   }
 
-  const footer = document.createElement("div");
-  footer.className = "card-footer";
-
-  const editButton = document.createElement("button");
-  editButton.type = "button";
-  editButton.className = "secondary-button";
-  editButton.textContent = "Edit";
-  editButton.title = "Edit item";
-  editButton.addEventListener("click", () => openEditDialog(item));
-
-  const deleteButton = document.createElement("button");
-  deleteButton.type = "button";
-  deleteButton.className = "danger-button";
-  deleteButton.textContent = "X";
-  deleteButton.ariaLabel = "Delete folder";
-  deleteButton.title = "Delete folder";
-  deleteButton.addEventListener("click", () => deleteFolder(item));
-
-  footer.append(editButton, deleteButton);
-  card.append(header, preview, footer);
+  card.append(header, preview);
   return card;
 }
 
@@ -506,6 +605,10 @@ function fitFolderTitles() {
 function scheduleFolderTitleFit() {
   window.clearTimeout(titleFitTimer);
   titleFitTimer = window.setTimeout(fitFolderTitles, 120);
+}
+
+function scrollToPageTop() {
+  window.scrollTo({ top: 0, left: 0, behavior: "auto" });
 }
 
 function renderItems(items) {
@@ -611,7 +714,7 @@ function renderTagFilters(availableTags, selectedTags) {
       .filter(Boolean)
   );
 
-  availableTags.forEach((tag) => {
+  checkedTagsFirst(availableTags, state.selectedTags).forEach((tag) => {
     const option = document.createElement("label");
     option.className = "filter-option";
 
@@ -656,7 +759,7 @@ function addPageButton(label, page, options = {}) {
   button.addEventListener("click", () => {
     if (page !== state.page) {
       state.page = page;
-      loadPage();
+      loadPage({ scrollToTop: true });
     }
   });
   elements.pagination.append(button);
@@ -699,7 +802,7 @@ function addPageJumpControl() {
 
     if (page !== state.page) {
       state.page = page;
-      loadPage();
+      loadPage({ scrollToTop: true });
     }
   });
 
@@ -736,7 +839,7 @@ function renderPagination() {
   addPageJumpControl();
 }
 
-async function loadPage() {
+async function loadPage(options = {}) {
   const requestId = ++state.scanRequestId;
   setLoading(true);
   elements.statusText.textContent = "Scanning folders...";
@@ -747,6 +850,9 @@ async function loadPage() {
     pageSize: String(state.pageSize),
     sortMode: state.sortMode,
   });
+  if (state.searchQuery) {
+    params.set("search", state.searchQuery);
+  }
   params.set("typeFilter", "1");
   state.selectedTypes.forEach((type) => params.append("type", type));
   if (state.selectedTags.size > 0) {
@@ -766,6 +872,7 @@ async function loadPage() {
     state.page = data.page;
     state.pageSize = data.pageSize;
     state.sortMode = data.sortMode || state.sortMode;
+    state.searchQuery = data.searchQuery || "";
     state.totalPages = data.totalPages;
     state.totalFolders = data.totalFolders;
     state.totalUnfilteredFolders = data.totalUnfilteredFolders;
@@ -777,8 +884,9 @@ async function loadPage() {
     elements.rootPath.value = state.rootPath;
     const allTypesSelected = state.selectedTypes.size === state.availableTypes.length;
     const hasTagFilter = state.selectedTags.size > 0;
+    const hasSearch = state.searchQuery.length > 0;
     const filterText =
-      allTypesSelected && !hasTagFilter
+      allTypesSelected && !hasTagFilter && !hasSearch
         ? ""
         : ` (${state.totalFolders} matching ${state.totalUnfilteredFolders} total)`;
     elements.statusText.textContent = `${state.totalFolders} folders found${filterText}. Page ${state.page} of ${state.totalPages}.`;
@@ -788,6 +896,9 @@ async function loadPage() {
     renderItems(data.items);
     setLoading(false);
     renderPagination();
+    if (options.scrollToTop) {
+      scrollToPageTop();
+    }
   } catch (error) {
     if (requestId !== state.scanRequestId) return;
     elements.grid.textContent = "";
@@ -896,6 +1007,15 @@ async function initialize() {
     loadPage();
   });
 
+  elements.titleSearchInput.addEventListener("input", () => {
+    window.clearTimeout(searchTimer);
+    searchTimer = window.setTimeout(() => {
+      state.searchQuery = elements.titleSearchInput.value.trim();
+      state.page = 1;
+      loadPage({ scrollToTop: true });
+    }, 120);
+  });
+
   elements.pageSize.addEventListener("change", () => {
     state.pageSize = Number(elements.pageSize.value);
     saveSettings();
@@ -954,14 +1074,41 @@ async function initialize() {
       setAddDialogOpen(false);
     }
   });
+  elements.addTagDropdownButton.addEventListener("click", () => {
+    setTagDropdownOpen("add", elements.addTagDropdownPanel.hidden);
+  });
+  elements.addTagSearchInput.addEventListener("input", () => renderTagOptions("add"));
+  elements.addTagDropdownPanel.addEventListener(
+    "wheel",
+    (event) => trapTagDropdownWheel("add", event),
+    { passive: false }
+  );
+  elements.addShowNewTagButton.addEventListener("click", () => {
+    state.activeTagContext = "add";
+    setNewTagDialogOpen(true);
+  });
   elements.editOpenFolderButton.addEventListener("click", () => {
     if (state.editItem) openFolder(state.editItem.folderPath);
   });
-  elements.tagDropdownButton.addEventListener("click", () => {
-    setTagDropdownOpen(elements.tagDropdownPanel.hidden);
+  elements.editDeleteButton.addEventListener("click", () => {
+    if (!state.editItem) return;
+    const item = state.editItem;
+    setEditDialogOpen(false);
+    deleteFolder(item);
   });
-  elements.tagSearchInput.addEventListener("input", renderTagOptions);
-  elements.showNewTagButton.addEventListener("click", () => setNewTagDialogOpen(true));
+  elements.tagDropdownButton.addEventListener("click", () => {
+    setTagDropdownOpen("edit", elements.tagDropdownPanel.hidden);
+  });
+  elements.tagSearchInput.addEventListener("input", () => renderTagOptions("edit"));
+  elements.tagDropdownPanel.addEventListener(
+    "wheel",
+    (event) => trapTagDropdownWheel("edit", event),
+    { passive: false }
+  );
+  elements.showNewTagButton.addEventListener("click", () => {
+    state.activeTagContext = "edit";
+    setNewTagDialogOpen(true);
+  });
   elements.cancelNewTagButton.addEventListener("click", () => setNewTagDialogOpen(false));
   elements.confirmNewTagButton.addEventListener("click", confirmNewTag);
   elements.newTagInput.addEventListener("keydown", (event) => {

@@ -329,7 +329,8 @@ async function scanRoot(
   hasExplicitTypeFilter,
   selectedTags,
   hasExplicitTagFilter,
-  sortMode
+  sortMode,
+  searchQuery
 ) {
   const resolvedRoot = path.resolve(rootPath);
   const rootStats = await fsp.stat(resolvedRoot);
@@ -359,9 +360,16 @@ async function scanRoot(
       };
     })
   );
+  const trimmedSearch = searchQuery.trim();
+  const normalizedSearch = trimmedSearch.toLowerCase();
+  const searchedFolders = normalizedSearch
+    ? foldersWithTypes.filter((folder) =>
+        (folder.displayName || "").toLowerCase().includes(normalizedSearch)
+      )
+    : foldersWithTypes;
   const availableTypes = PROJECT_TYPES;
   const availableTags = uniqueTags(
-    foldersWithTypes.flatMap((folder) => folder.tags || [])
+    searchedFolders.flatMap((folder) => folder.tags || [])
   );
   const activeTypeSet = hasExplicitTypeFilter
     ? new Set(selectedTypes.filter((type) => PROJECT_TYPE_SET.has(type)))
@@ -379,7 +387,7 @@ async function scanRoot(
   const activeTagKeys = new Set(
     Array.from(activeTagSet).map((tag) => tag.toLowerCase())
   );
-  const filteredFolders = foldersWithTypes.filter((folder) => {
+  const filteredFolders = searchedFolders.filter((folder) => {
     if (!activeTypeSet.has(folder.type)) return false;
     if (!activeTagKeys.size) return true;
     return (folder.tags || []).some((tag) => activeTagKeys.has(tag.toLowerCase()));
@@ -438,8 +446,9 @@ async function scanRoot(
     page: safePage,
     pageSize,
     sortMode,
+    searchQuery: trimmedSearch,
     totalFolders,
-    totalUnfilteredFolders: foldersWithTypes.length,
+    totalUnfilteredFolders: searchedFolders.length,
     totalPages,
     availableTypes,
     availableTags,
@@ -663,6 +672,8 @@ async function addItem(req, res, reqUrl) {
   const title = String(reqUrl.searchParams.get("title") || "").trim();
   const type = String(reqUrl.searchParams.get("type") || "").trim().toLowerCase();
   const fileName = sanitizeFileName(reqUrl.searchParams.get("fileName") || "");
+  const requestedTags = uniqueTags(normalizeTags(reqUrl.searchParams.getAll("tag")));
+  const tags = requestedTags.length ? requestedTags : ["Untagged"];
 
   if (!rootPath || !title || !type || !fileName) {
     sendJson(res, 400, { error: "A file, title, and type are required." });
@@ -703,7 +714,7 @@ async function addItem(req, res, reqUrl) {
 
     await fsp.writeFile(
       path.join(createdFolder, "project.json"),
-      `${JSON.stringify({ title, type }, null, 2)}\n`,
+      `${JSON.stringify({ title, type, tags }, null, 2)}\n`,
       { flag: "wx" }
     );
 
@@ -770,11 +781,12 @@ async function handleRequest(req, res) {
     if (req.method === "GET" && reqUrl.pathname === "/api/scan") {
       const rootPath = reqUrl.searchParams.get("rootPath") || DEFAULT_ROOT;
       const page = clampInteger(reqUrl.searchParams.get("page"), 1, 1, 100000);
-      const pageSize = clampInteger(reqUrl.searchParams.get("pageSize"), 12, 1, 60);
+      const pageSize = clampInteger(reqUrl.searchParams.get("pageSize"), 20, 1, 100);
       const requestedSortMode = reqUrl.searchParams.get("sortMode") || "default";
       const sortMode = SORT_MODES.has(requestedSortMode)
         ? requestedSortMode
         : "default";
+      const searchQuery = reqUrl.searchParams.get("search") || "";
       const selectedTypes = reqUrl.searchParams
         .getAll("type")
         .map((type) => type.trim().toLowerCase())
@@ -793,7 +805,8 @@ async function handleRequest(req, res) {
         hasExplicitTypeFilter,
         selectedTags,
         hasExplicitTagFilter,
-        sortMode
+        sortMode,
+        searchQuery
       );
       sendJson(res, 200, result);
       return;

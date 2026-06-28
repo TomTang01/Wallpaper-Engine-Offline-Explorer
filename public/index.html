@@ -26,6 +26,10 @@
       <section class="toolbar" aria-live="polite">
         <div id="statusText">Loading app...</div>
         <div class="toolbar-controls">
+          <label class="search-wrap" for="titleSearchInput">
+            <span class="sr-only">Search titles</span>
+            <input id="titleSearchInput" type="search" placeholder="Search title" autocomplete="off" />
+          </label>
           <div class="filter-wrap">
             <button id="filterButton" class="secondary-button" type="button" aria-expanded="false">
               Filter
@@ -54,11 +58,12 @@
           <label class="page-size">
             Per page
             <select id="pageSize">
-              <option value="8">8</option>
-              <option value="12" selected>12</option>
-              <option value="16">16</option>
-              <option value="24">24</option>
+              <option value="20" selected>20</option>
+              <option value="40">40</option>
               <option value="50">50</option>
+              <option value="60">60</option>
+              <option value="80">80</option>
+              <option value="100">100</option>
             </select>
           </label>
         </div>
@@ -95,6 +100,27 @@
             </select>
           </label>
 
+          <div class="field-label">
+            Tags
+            <div class="tag-picker">
+              <button
+                id="addTagDropdownButton"
+                class="secondary-button tag-dropdown-button"
+                type="button"
+                aria-expanded="false"
+              >
+                Choose tags
+              </button>
+              <div id="addTagDropdownPanel" class="tag-dropdown-panel" hidden>
+                <div class="tag-dropdown-tools">
+                  <input id="addTagSearchInput" type="search" placeholder="Search tags" autocomplete="off" />
+                  <button id="addShowNewTagButton" type="button">New</button>
+                </div>
+                <div id="addTagOptions" class="tag-options"></div>
+              </div>
+            </div>
+          </div>
+
           <div class="dialog-actions">
             <button id="cancelAddButton" class="danger-button" type="button">Back</button>
             <button id="confirmAddButton" type="submit" disabled>Add</button>
@@ -122,7 +148,12 @@
           <div class="field-label">
             Tags
             <div class="tag-picker">
-              <button id="tagDropdownButton" class="secondary-button" type="button" aria-expanded="false">
+              <button
+                id="tagDropdownButton"
+                class="secondary-button tag-dropdown-button"
+                type="button"
+                aria-expanded="false"
+              >
                 Choose tags
               </button>
               <div id="tagDropdownPanel" class="tag-dropdown-panel" hidden>
@@ -134,6 +165,10 @@
               </div>
             </div>
           </div>
+
+          <button id="editDeleteButton" class="danger-button delete-wide-button" type="button">
+            DELETE
+          </button>
 
           <div class="dialog-actions">
             <button id="cancelEditButton" class="danger-button" type="button">Back</button>
